@@ -8,11 +8,11 @@ A Git → Iotas task logger. Automatically extracts commit messages from your gi
 
 ## Features
 
-- 📝 **Automatic log extraction**: Parse commits from multiple git repositories
-- 📅 **Weekly organization**: Group commits by ISO week
-- 🔄 **Sync to Iotas**: Store logs directly in the Iotas database
-- 💾 **Export capability**: Export weekly logs to stdout
-- ✅ **System verification**: Built-in health check command
+- **Automatic log extraction**: Parse commits from multiple git repositories
+- **Weekly organization**: Group commits by ISO week
+- **Sync to Iotas**: Store logs directly in the Iotas database
+- **Export capability**: Export weekly logs to stdout
+- **System verification**: Built-in health check command
 
 ## Commands
 
@@ -30,7 +30,7 @@ tasklog help                   # Show help message
 ### Prerequisites
 
 - [Bun](https://bun.com) runtime
-- [Iotas](https://world.gnome.org/iotas/) note-taking app installed
+- [Iotas](https://apps.gnome.org/Iotas/) note-taking app installed
 - Git repositories to monitor
 
 ### Installation
