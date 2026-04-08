@@ -8,8 +8,9 @@ BIN=$(BUILD_DIR)/$(APP_NAME)
 
 BUN=bun
 
+
 # ================================
-# DEFAULT
+# HELP
 # ================================
 .PHONY: help
 help:
@@ -17,9 +18,43 @@ help:
 	@echo "Tasklog CLI - Makefile"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make dev        Run in development mode"
-	@echo "  make build      Build binary"
-	@echo "  make release    Build optimized binary"
+	@echo "  make dev               Run in development mode"
+	@echo "  make build             Build binary"
+	@echo "  make release           Build optimized binary"
+	@echo "  make install           Install globally and enable user service"
+	@echo "  make uninstall         Uninstall globally and remove user service"
+	@echo "  make clean             Remove build artifacts"
+	@echo "  make run               Run compiled binary"
+	@echo "  make doctor            Run system check"
+	@echo "  make export            Export logs"
+	@echo "  make service-install   Install as user service (run on boot)"
+	@echo "  make service-uninstall Remove user service"
+	@echo ""
+
+# ================================
+# SYSTEMD USER SERVICE
+# ================================
+.PHONY: service-install
+service-install:
+	@echo "Installing systemd user service..."
+	mkdir -p $$HOME/.config/systemd/user
+	cp tasklog.service $$HOME/.config/systemd/user/tasklog.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now tasklog.service
+	echo "Service installed and started."
+
+.PHONY: service-uninstall
+service-uninstall:
+	@echo "Uninstalling systemd user service..."
+	systemctl --user stop tasklog.service || true
+	systemctl --user disable tasklog.service || true
+	rm -f $$HOME/.config/systemd/user/tasklog.service
+	systemctl --user daemon-reload
+	echo "Service uninstalled."
+
+# ================================
+# HELP (append service usage)
+# ================================
 	@echo "  make install    Install globally"
 	@echo "  make uninstall  Uninstall globally"
 	@echo "  make clean      Remove build artifacts"
@@ -65,7 +100,7 @@ run: build
 # INSTALL
 # ================================
 .PHONY: install
-install: release
+install: release service-install
 	@echo "Installing globally..."
 	cp $(BIN) /usr/local/bin/$(APP_NAME)
 	chmod +x /usr/local/bin/$(APP_NAME)
@@ -93,7 +128,7 @@ export:
 # UNINSTALL
 # ================================
 .PHONY: uninstall
-uninstall:
+uninstall: service-uninstall
 	@echo "Uninstalling $(APP_NAME)..."
 	@if [ -f /usr/local/bin/$(APP_NAME) ]; then \
 		rm /usr/local/bin/$(APP_NAME); \
