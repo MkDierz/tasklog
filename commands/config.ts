@@ -106,13 +106,13 @@ export async function configCommand() {
       case "save":
         await writeRepos(repos);
         console.log("✓ Configuration saved.\n");
-        rl.close(); // ✅ important
+        rl.close();
         return;
 
       case "q":
       case "quit":
         console.log("Exiting without saving.\n");
-        rl.close(); // ✅ important
+        rl.close();
         return;
 
       default:
