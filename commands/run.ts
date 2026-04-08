@@ -15,9 +15,9 @@ export async function runCommand() {
   const db = new Database(CONFIG.DB_PATH);
   const iotas = new IotasDB(db);
 
-  const tx = db.transaction((entries: any[]) => {
+  const tx = db.transaction((entries) => {
     for (const e of entries) {
-      iotas.upsert(e.repo, e.week, e.content);
+      iotas.upsert(e.repoName, e.week, e.content);
     }
   });
 
@@ -26,8 +26,11 @@ export async function runCommand() {
 
     const commits = getCommits(repo);
     const grouped = groupByWeek(repo.split("/").pop()!, commits);
+    const repoName = repo.split("/").pop()!;
 
     const entries = [...grouped.entries()].map(([week, content]) => ({
+      repoPath: repo,
+      repoName,
       repo,
       week,
       content,

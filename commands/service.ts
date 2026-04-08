@@ -12,8 +12,8 @@ function runSystemctl(args: string[]): boolean {
   return true;
 }
 
-export function serviceCommand(subcmd?: string) {
-  switch (subcmd) {
+export function serviceCommand(subCmd?: string) {
+  switch (subCmd) {
     case "enable":
       runSystemctl(["enable", "--now", "tasklog.service"]);
       break;
