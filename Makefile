@@ -5,6 +5,7 @@ APP_NAME=tasklog
 ENTRY=cli.ts
 BUILD_DIR=dist
 BIN=$(BUILD_DIR)/$(APP_NAME)
+INSTALL_DIR=$$HOME/.local/bin
 
 BUN=bun
 
@@ -101,9 +102,33 @@ run: build
 # ================================
 .PHONY: install
 install: release service-install
-	@echo "Installing globally..."
-	cp $(BIN) /usr/local/bin/$(APP_NAME)
-	chmod +x /usr/local/bin/$(APP_NAME)
+	@echo "Installing to user directory..."
+	mkdir -p $(INSTALL_DIR)
+	cp $(BIN) $(INSTALL_DIR)/$(APP_NAME)
+	chmod +x $(INSTALL_DIR)/$(APP_NAME)
+
+	@echo ""
+	@echo "Installed to $(INSTALL_DIR)/$(APP_NAME)"
+
+	@if ! echo $$PATH | grep -q "$(INSTALL_DIR)"; then \
+		echo ""; \
+		echo "WARNING: $(INSTALL_DIR) is not in your PATH"; \
+		echo "Add this to your shell config (~/.bashrc, ~/.zshrc):"; \
+		echo "  export PATH=\$$HOME/.local/bin:\$$PATH"; \
+	fi
+
+# ================================
+# UNINSTALL
+# ================================
+.PHONY: uninstall
+uninstall: service-uninstall
+	@echo "Uninstalling $(APP_NAME)..."
+	@if [ -f $(INSTALL_DIR)/$(APP_NAME) ]; then \
+		rm $(INSTALL_DIR)/$(APP_NAME); \
+		echo "Removed from $(INSTALL_DIR)"; \
+	else \
+		echo "Not installed"; \
+	fi
 
 # ================================
 # CLEAN
@@ -122,17 +147,3 @@ doctor:
 .PHONY: export
 export:
 	$(BUN) run $(ENTRY) export
-
-
-# ================================
-# UNINSTALL
-# ================================
-.PHONY: uninstall
-uninstall: service-uninstall
-	@echo "Uninstalling $(APP_NAME)..."
-	@if [ -f /usr/local/bin/$(APP_NAME) ]; then \
-		rm /usr/local/bin/$(APP_NAME); \
-		echo "Removed"; \
-	else \
-		echo "Not installed"; \
-	fi
