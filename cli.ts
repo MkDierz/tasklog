@@ -14,14 +14,14 @@ tasklog - Git → Iotas task logger
 
 Usage:
   tasklog run
-  tasklog export [week]      Export logs (default: current week)
+  tasklog export [date]      Export logs (default: today)
   tasklog config             Manage repository configuration (interactive)
   tasklog doctor
   tasklog service [enable|disable|start|stop|status]  Manage background service (run on boot)
 
 Examples:
   tasklog export
-  tasklog export 2026-W14
+  tasklog export 2026-09-03
   tasklog config
   tasklog service enable
 

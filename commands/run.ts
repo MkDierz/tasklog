@@ -1,42 +1,62 @@
-import { readFileSync } from "fs";
-import { Database } from "bun:sqlite";
-import { CONFIG } from "../infra/config";
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
+import { CONFIG, CSV_PATH, CSV_DIR } from "../infra/config";
 import { log } from "../infra/logger";
 import { getCommits } from "../core/git";
-import { groupByWeek } from "../core/parser";
-import { IotasDB } from "../core/iotas";
+
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
 
 export async function runCommand() {
-  const repos = readFileSync(CONFIG.CONFIG_FILE, "utf-8")
+  const entries = readFileSync(CONFIG.CONFIG_FILE, "utf-8")
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"));
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => {
+      const parts = l.split(/\s+/);
+      const repo = parts.shift()!;
+      const branches = parts.length ? parts : ["main"];
+      return { repo, branches };
+    });
 
-  const db = new Database(CONFIG.DB_PATH);
-  const iotas = new IotasDB(db);
+  if (!existsSync(CSV_DIR)) {
+    mkdirSync(CSV_DIR, { recursive: true });
+  }
 
-  const tx = db.transaction((entries) => {
-    for (const e of entries) {
-      iotas.upsert(e.repoName, e.week, e.content);
+  if (!existsSync(CSV_PATH)) {
+    appendFileSync(CSV_PATH, "path,commit,date\n");
+  }
+
+  const seen = new Set<string>();
+
+  for (const { repo, branches } of entries) {
+    log("INFO", `Processing ${repo} [${branches.join(", ")}]`);
+
+    const commits = getCommits(repo, branches);
+
+    const rows = commits
+      .map((line) => line.split("|"))
+      .filter((parts) => parts.length === 2)
+      .map(([date, subject]) => ({ date, subject: subject! }))
+      .filter(({ date, subject }) => {
+        const key = `${repo}|${date}|${subject}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map(({ date, subject }) =>
+        `${csvEscape(repo)},${csvEscape(subject)},${date}`,
+      );
+
+    if (rows.length) {
+      appendFileSync(CSV_PATH, rows.join("\n") + "\n");
+      log("INFO", `  Appended ${rows.length} commits to ${CSV_PATH}`);
+    } else {
+      log("INFO", `  No commits found for ${repo}`);
     }
-  });
-
-  for (const repo of repos) {
-    log("INFO", `Processing ${repo}`);
-
-    const commits = getCommits(repo);
-    const grouped = groupByWeek(repo.split("/").pop()!, commits);
-    const repoName = repo.split("/").pop()!;
-
-    const entries = [...grouped.entries()].map(([week, content]) => ({
-      repoPath: repo,
-      repoName,
-      repo,
-      week,
-      content,
-    }));
-
-    tx(entries);
   }
 
   log("INFO", "Done");

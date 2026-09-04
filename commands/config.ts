@@ -20,6 +20,17 @@ async function writeRepos(repos: string[]) {
   await Bun.write(CONFIG.CONFIG_FILE, repos.join("\n") + "\n");
 }
 
+function parseEntry(line: string): { repo: string; branches: string[] } {
+  const parts = line.split(/\s+/);
+  const repo = parts.shift()!;
+  const branches = parts.length ? parts : ["main"];
+  return { repo, branches };
+}
+
+function formatEntry(repo: string, branches: string[]) {
+  return `${repo} ${branches.join(" ")}`.trim();
+}
+
 /* ------------------ DISPLAY ------------------ */
 
 function displayRepos(repos: string[]) {
@@ -29,8 +40,9 @@ function displayRepos(repos: string[]) {
   }
 
   console.log("\nConfigured repositories:\n");
-  repos.forEach((repo, i) => {
-    console.log(`  [${i}] ${repo}`);
+  repos.forEach((entry, i) => {
+    const { repo, branches } = parseEntry(entry);
+    console.log(`  [${i}] ${repo} (branches: ${branches.join(", ")})`);
   });
   console.log();
 }
@@ -42,11 +54,21 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
+let pendingPrompt: ((line: string) => void) | null = null;
+
+rl.on("line", (line) => {
+  if (pendingPrompt) {
+    const resolve = pendingPrompt;
+    pendingPrompt = null;
+    resolve(line);
+  }
+});
+
 function promptUser(question: string): Promise<string> {
+  process.stdout.write(question);
+
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      resolve(answer.trim());
-    });
+    pendingPrompt = (line: string) => resolve(line.trim());
   });
 }
 
@@ -61,10 +83,11 @@ export async function configCommand() {
     console.log("Commands:");
     console.log("  (a)dd     - Add a new repository");
     console.log("  (r)emove  - Remove a repository by number");
+    console.log("  (e)dit    - Edit branches for a repository");
     console.log("  (s)ave    - Save and exit");
     console.log("  (q)uit    - Exit without saving\n");
 
-    const cmd = await promptUser("Choose action [a/r/s/q]: ");
+    const cmd = await promptUser("Choose action [a/r/e/s/q]: ");
 
     switch (cmd.toLowerCase()) {
       case "a":
@@ -73,13 +96,18 @@ export async function configCommand() {
 
         if (!path) break;
 
-        if (repos.includes(path)) {
+        if (repos.some((e) => parseEntry(e).repo === path)) {
           console.log("✗ Repository already in config.\n");
           break;
         }
 
-        repos.push(path);
-        console.log(`✓ Added: ${path}\n`);
+        const branchesRaw = await promptUser(
+          "Enter branches (space-separated, default 'main'): ",
+        );
+        const branches = branchesRaw ? branchesRaw.split(/\s+/).filter(Boolean) : ["main"];
+
+        repos.push(formatEntry(path, branches));
+        console.log(`✓ Added: ${formatEntry(path, branches)}\n`);
         break;
       }
 
@@ -99,6 +127,31 @@ export async function configCommand() {
 
         console.log(`✓ Removed: ${repos[index]}\n`);
         repos.splice(index, 1);
+        break;
+      }
+
+      case "e":
+      case "edit": {
+        if (!repos.length) {
+          console.log("✗ No repositories to edit.\n");
+          break;
+        }
+
+        const index = Number(await promptUser("Enter index: "));
+
+        if (Number.isNaN(index) || !repos[index]) {
+          console.log("✗ Invalid number.\n");
+          break;
+        }
+
+        const { repo } = parseEntry(repos[index]);
+        const branchesRaw = await promptUser(
+          `Enter branches for ${repo} (space-separated, default 'main'): `,
+        );
+        const branches = branchesRaw ? branchesRaw.split(/\s+/).filter(Boolean) : ["main"];
+
+        repos[index] = formatEntry(repo, branches);
+        console.log(`✓ Updated: ${formatEntry(repo, branches)}\n`);
         break;
       }
 

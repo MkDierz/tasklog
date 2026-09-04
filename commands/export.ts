@@ -1,24 +1,79 @@
-import { Database } from "bun:sqlite";
-import { CONFIG } from "../infra/config";
-import { getCurrentISOWeek } from "../core/week";
+import { readFileSync, existsSync } from "fs";
+import { CSV_PATH } from "../infra/config";
 
-export function exportCommand(week?: string) {
-  const db = new Database(CONFIG.DB_PATH);
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
-  const targetWeek = week || getCurrentISOWeek();
+function parseCSVLine(line: string): { path: string; commit: string; date: string } | null {
+  let i = 0;
+  const fields: string[] = [];
+  let current = "";
 
-  const rows = db
-    .query("SELECT title, content FROM note WHERE title LIKE ?")
-    .all(`%${targetWeek}%`) as any[];
+  while (i < line.length) {
+    const char = line[i];
 
-  if (!rows.length) {
-    console.log(`No logs found for ${targetWeek}`);
+    if (char === '"') {
+      i++;
+      while (i < line.length && line[i] !== '"') {
+        current += line[i];
+        i++;
+      }
+      if (line[i] === '"') i++;
+      if (line[i] === '"') {
+        current += '"';
+        i++;
+      }
+    } else if (char === ",") {
+      fields.push(current);
+      current = "";
+      i++;
+    } else {
+      current += char;
+      i++;
+    }
+  }
+
+  fields.push(current);
+
+  if (fields.length !== 3) return null;
+
+  const [path, commit, date] = fields;
+  if (!path || !commit || !date) return null;
+
+  return { path, commit, date };
+}
+
+export function exportCommand(date?: string) {
+  if (!existsSync(CSV_PATH)) {
+    console.log(`No CSV file found at ${CSV_PATH}`);
+    console.log("Run `tasklog run` first.");
     return;
   }
 
-  console.log(`\n📅 WEEK ${targetWeek}\n`);
+  const targetDate = date || today();
+  const lines = readFileSync(CSV_PATH, "utf-8").trim().split("\n");
+
+  const headers = lines[0];
+  if (headers !== "path,commit,date") {
+    console.log("Unrecognized CSV format");
+    return;
+  }
+
+  const rows = lines
+    .slice(1)
+    .map(parseCSVLine)
+    .filter((r): r is { path: string; commit: string; date: string } => r !== null)
+    .filter((r) => r.date === targetDate);
+
+  if (!rows.length) {
+    console.log(`No logs found for ${targetDate}`);
+    return;
+  }
+
+  console.log(`\nDay ${targetDate}\n`);
 
   for (const row of rows) {
-    console.log(row.content);
+    console.log(`${row.date} | ${row.path} | ${row.commit}`);
   }
 }

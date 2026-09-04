@@ -1,25 +1,25 @@
 # tasklog
 
-A Git → Iotas task logger. Automatically extracts commit messages from your git repositories and syncs them to the Iotas note-taking app, organized by week.
+A Git → CSV task logger. Automatically extracts commit messages from your git repositories, filtered by author and configured branches, and dumps them to a CSV file organized by day.
 
 ## Overview
 
-**tasklog** processes git commits from configured repositories and creates weekly task logs in [Iotas](https://world.gnome.org/iotas/), a GNOME note-taking application. It filters commits by author and groups them by ISO week for easy review and export.
+**tasklog** reads commits from configured repositories and appends each one as a row (`path,commit,date`) to a CSV file. It filters commits by author (from `git config user.name`) and supports multiple configurable branches per repository.
 
 ## Features
 
 - **Automatic log extraction**: Parse commits from multiple git repositories
-- **Weekly organization**: Group commits by ISO week
-- **Sync to Iotas**: Store logs directly in the Iotas database
-- **Export capability**: Export weekly logs to stdout
+- **Configurable branches**: Read from `main`, `dev`, or any branch — multiple per repo
+- **CSV output**: Append commit data to a daily CSV file
+- **Export by date**: Filter and print logs for a specific day
 - **System verification**: Built-in health check command
 
 ## Commands
 
 ```bash
-tasklog run                    # Process all repos and sync to Iotas
-tasklog export [week]          # Export logs for a week (default: current week)
-tasklog export 2026-W14        # Export logs for a specific week
+tasklog run                    # Process all repos and append commits to CSV
+tasklog export [date]          # Export logs for a day (default: today)
+tasklog export 2026-09-03      # Export logs for a specific date
 tasklog config                 # Interactively manage configured repositories
 tasklog doctor                 # Check system configuration
 tasklog help                   # Show help message
@@ -30,7 +30,6 @@ tasklog help                   # Show help message
 ### Prerequisites
 
 - [Bun](https://bun.com) runtime
-- [Iotas](https://apps.gnome.org/Iotas/) note-taking app installed
 - Git repositories to monitor
 
 ### Installation
@@ -47,7 +46,15 @@ bun install
 tasklog config
 ```
 
-This will guide you through adding or removing repository paths. You can also manually edit `~/.config/git-tasklog/repos.conf` with one path per line.
+This will guide you through adding, removing, or editing repositories. You can also manually edit `~/.config/git-tasklog/repos.conf`:
+
+```
+/path/to/repo main dev
+# or just one branch:
+/another/repo main
+```
+
+One repository per line. The first token is the path; remaining tokens are space-separated branches (`main` is the default if omitted). Lines starting with `#` are ignored.
 
 3. Build the executable:
 
@@ -82,17 +89,16 @@ make clean            # Remove build artifacts
 
 ## Architecture
 
-- **core/**: Core logic for git parsing, data grouping, and Iotas integration
+- **core/**: Core logic for git parsing
   - `git.ts`: Fetch commits from repositories
-  - `parser.ts`: Group commits by week
-  - `iotas.ts`: Database operations for Iotas
-  - `week.ts`: ISO week utilities
 - **commands/**: CLI commands
-  - `run.ts`: Main sync command
-  - `export.ts`: Export logs for a week
+  - `run.ts`: Fetch commits and append to CSV
+  - `export.ts`: Export logs for a given date
+  - `config.ts`: Interactive repository management
   - `doctor.ts`: System health check
+  - `service.ts`: Systemd user service control
 - **infra/**: Infrastructure and utilities
-  - `config.ts`: Configuration management
+  - `config.ts`: Configuration constants and paths
   - `logger.ts`: Logging utilities
   - `lock.ts`: File locking
 
@@ -101,7 +107,7 @@ make clean            # Remove build artifacts
 ### Default Paths
 
 - **Config file**: `~/.config/git-tasklog/repos.conf`
-- **Iotas DB**: `~/.var/app/org.gnome.World.Iotas/data/iotas/notes.db`
+- **CSV output**: `~/.local/share/git-tasklog/tasklog.csv`
 - **Log file**: `~/.local/share/git-tasklog/run.log`
 
 ### Author
@@ -118,5 +124,5 @@ Tasklog will use this name to filter commits from your configured repositories.
 
 - **Runtime**: [Bun](https://bun.com)
 - **Language**: TypeScript
-- **Database**: SQLite (Iotas database)
+- **Output**: CSV
 - **VCS**: Git
