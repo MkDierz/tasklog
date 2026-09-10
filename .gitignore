@@ -1,37 +1,14 @@
-# dependencies (bun install)
-node_modules
+# Rust build artifacts
+/target/
+**/*.rs.bk
 
-# output
-out
-dist
-*.tgz
+# Cargo lockfile is often committed for binaries, but keep this if you prefer not to version it.
+# Cargo.lock
 
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
-
-# IntelliJ based IDEs
-.idea
-
-# Finder (MacOS) folder config
+# Editor / system files
+.idea/
+.vscode/
 .DS_Store
 
-
-dist/*
+# Local runtime output
+~/.local/share/git-tasklog/
