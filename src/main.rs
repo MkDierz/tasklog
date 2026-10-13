@@ -657,8 +657,97 @@ fn report_command(args: &[String]) -> Result<(), String> {
 // config, doctor, service
 // ---------------------------------------------------------------------------
 
+struct BranchEdit {
+    branches: Vec<String>,
+    added: Vec<String>,
+    removed: Vec<String>,
+    missing: Vec<String>,
+}
+
+/// Applies a branch edit to the current list.
+///   feature-x      add a branch (bare names add)
+///   +feature-x     add a branch
+///   -old-branch    remove a branch
+///   =a b c         replace the whole list
+fn apply_branch_edit(current: &[String], input: &str) -> BranchEdit {
+    let input = input.trim();
+    let mut branches: Vec<String>;
+    let mut missing: Vec<String> = Vec::new();
+
+    if let Some(rest) = input.strip_prefix('=') {
+        branches = Vec::new();
+        for name in rest.split_whitespace() {
+            if !branches.iter().any(|b| b == name) {
+                branches.push(name.to_string());
+            }
+        }
+    } else {
+        branches = current.to_vec();
+        for token in input.split_whitespace() {
+            if let Some(name) = token.strip_prefix('-') {
+                if name.is_empty() {
+                    continue;
+                }
+                match branches.iter().position(|b| b == name) {
+                    Some(pos) => {
+                        branches.remove(pos);
+                    }
+                    None => missing.push(name.to_string()),
+                }
+            } else {
+                let name = token.strip_prefix('+').unwrap_or(token);
+                if name.is_empty() {
+                    continue;
+                }
+                if !branches.iter().any(|b| b == name) {
+                    branches.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    // A repo always needs at least one branch.
+    if branches.is_empty() {
+        branches.push("main".to_string());
+    }
+
+    let added: Vec<String> = branches
+        .iter()
+        .filter(|b| !current.contains(b))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = current
+        .iter()
+        .filter(|b| !branches.contains(b))
+        .cloned()
+        .collect();
+
+    BranchEdit { branches, added, removed, missing }
+}
+
+/// Local branch names of a repo, to suggest while editing.
+fn list_git_branches(repo: &str) -> Vec<String> {
+    let path = expand_path(repo);
+    let output = Command::new("git")
+        .args(["-C", path.as_str(), "branch", "--format=%(refname:short)"])
+        .output();
+
+    match output {
+        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty() && !line.starts_with('('))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn config_command() {
     let mut repos = read_repo_entries();
+    // Repos whose branch set changed; their last_run is cleared on save so the
+    // next run rescans full history (hash dedupe keeps existing rows intact).
+    let mut rescan: BTreeSet<String> = BTreeSet::new();
+
     loop {
         println!("\nConfigured repositories:\n");
         if repos.is_empty() {
@@ -673,7 +762,7 @@ fn config_command() {
         println!("Commands:");
         println!("  (a)dd     - Add a new repository");
         println!("  (r)emove  - Remove a repository by number");
-        println!("  (e)dit    - Edit branches for a repository");
+        println!("  (e)dit    - Add/remove branches for a repository");
         println!("  (s)ave    - Save and exit");
         println!("  (q)uit    - Exit without saving\n");
 
@@ -694,6 +783,7 @@ fn config_command() {
                 } else {
                     branches.split_whitespace().map(str::to_string).collect()
                 };
+                rescan.insert(path.clone());
                 repos.push(RepoEntry { repo: path, branches });
                 println!("Added: {}\n", format_entry(&repos[repos.len() - 1]));
             }
@@ -732,20 +822,70 @@ fn config_command() {
                     println!("Invalid number.\n");
                     continue;
                 }
+
                 let repo = repos[index].repo.clone();
-                let branches = prompt(&format!(
-                    "Enter branches for {repo} (space-separated, default 'main'): "
-                ));
-                let branches = if branches.trim().is_empty() {
-                    vec!["main".to_string()]
-                } else {
-                    branches.split_whitespace().map(str::to_string).collect()
-                };
-                repos[index].branches = branches;
+                let current = repos[index].branches.clone();
+
+                println!("\nBranches for {repo}: {}", current.join(", "));
+                let available: Vec<String> = list_git_branches(&repo)
+                    .into_iter()
+                    .filter(|b| !current.contains(b))
+                    .collect();
+                if !available.is_empty() {
+                    println!("Other local branches: {}", available.join(", "));
+                }
+                println!("Type names to add, -name to remove, =a b c to replace all, empty to cancel.");
+
+                let input = prompt("Edit: ");
+                if input.trim().is_empty() {
+                    println!("No changes.\n");
+                    continue;
+                }
+
+                let edit = apply_branch_edit(&current, &input);
+                if !edit.missing.is_empty() {
+                    println!("Not in list (ignored): {}", edit.missing.join(", "));
+                }
+                if edit.added.is_empty() && edit.removed.is_empty() {
+                    println!("No changes.\n");
+                    continue;
+                }
+                if !edit.added.is_empty() {
+                    println!("Added: {}", edit.added.join(", "));
+                }
+                if !edit.removed.is_empty() {
+                    println!("Removed: {}", edit.removed.join(", "));
+                }
+
+                rescan.insert(repo);
+                repos[index].branches = edit.branches;
                 println!("Updated: {}\n", format_entry(&repos[index]));
             }
             "s" | "save" => {
                 write_repo_entries(&repos);
+
+                if !rescan.is_empty() && db_path().exists() {
+                    let conn = open_db();
+                    let mut reset: Vec<String> = Vec::new();
+                    for repo in rescan
+                        .iter()
+                        .filter(|r| repos.iter().any(|entry| entry.repo == **r))
+                    {
+                        conn.execute(
+                            "DELETE FROM meta WHERE key = ?1",
+                            params![last_run_key(&expand_path(repo))],
+                        )
+                        .ok();
+                        reset.push(repo.clone());
+                    }
+                    if !reset.is_empty() {
+                        println!(
+                            "Next `tasklog run` will rescan full history for: {}",
+                            reset.join(", ")
+                        );
+                    }
+                }
+
                 println!("Configuration saved.\n");
                 return;
             }
