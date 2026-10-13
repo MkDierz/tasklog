@@ -1,14 +1,31 @@
-use chrono::{DateTime, Duration, Local};
-use rusqlite::{params, Connection};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Weekday};
+use rusqlite::{params, Connection, OpenFlags};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CONFIG_FILE: &str = "repos.conf";
 const DB_FILE: &str = "tasklog.db";
-const OVERLAP_DAYS: i64 = 1;
+const DEFAULT_PROJECT_NAME: &str = "[ET] GLI - Alfagift";
+/// Overlap added to last_run to catch commits whose committer date is older
+/// than the last run (pulls, rebases). Safe because hashes are deduplicated.
+const OVERLAP_DAYS: i64 = 7;
+
+/// Column layout consumed by google-form-filler. Do not reorder or rename.
+const REPORT_HEADER: [&str; 9] = [
+    "Task Completion Date",
+    "Project Name",
+    "Hours",
+    "Task List",
+    "Complexity",
+    "Urgency",
+    "Overtime",
+    "Obstacles",
+    "Next Target",
+];
 
 #[derive(Debug)]
 struct RepoEntry {
@@ -35,6 +52,18 @@ struct RunOptions {
     full: bool,
     since: Option<String>,
 }
+
+struct ReportOptions {
+    start_date: Option<String>,
+    end_date: Option<String>,
+    project_name: String,
+    output: PathBuf,
+    include_merges: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Paths and database
+// ---------------------------------------------------------------------------
 
 fn home_dir() -> PathBuf {
     dirs::home_dir().expect("HOME directory not found")
@@ -126,6 +155,10 @@ fn git_author(repo: &str) -> Option<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Repo config
+// ---------------------------------------------------------------------------
+
 fn read_repo_entries() -> Vec<RepoEntry> {
     let path = config_path();
     if !path.exists() {
@@ -170,6 +203,10 @@ fn write_repo_entries(entries: &[RepoEntry]) {
         .join("\n");
     fs::write(path, format!("{content}\n")).expect("failed to write config file");
 }
+
+// ---------------------------------------------------------------------------
+// run: git -> SQLite
+// ---------------------------------------------------------------------------
 
 /// Line format: HASH \t PARENTS \t DATE \t SUBJECT
 fn parse_commit_line(line: &str, repo: &str) -> Option<CommitRow> {
@@ -358,6 +395,10 @@ fn run_command(args: &[String]) {
     println!("\nDone. {total_inserted} new commit(s) logged.");
 }
 
+// ---------------------------------------------------------------------------
+// export: print one day
+// ---------------------------------------------------------------------------
+
 fn export_command(date_arg: Option<&str>) {
     if !db_path().exists() {
         println!("No database found at {}", db_path().display());
@@ -404,6 +445,217 @@ fn export_command(date_arg: Option<&str>) {
         println!("{date} | {repo} | {short} | {message}{tag}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// report: SQLite -> task report CSV (for google-form-filler)
+// ---------------------------------------------------------------------------
+
+fn next_value(iter: &mut std::slice::Iter<String>, name: &str) -> Result<String, String> {
+    iter.next()
+        .cloned()
+        .ok_or_else(|| format!("{name} requires a value"))
+}
+
+fn parse_report_options(args: &[String]) -> Result<ReportOptions, String> {
+    let mut opts = ReportOptions {
+        start_date: None,
+        end_date: None,
+        project_name: DEFAULT_PROJECT_NAME.to_string(),
+        output: PathBuf::from("output.csv"),
+        include_merges: false,
+    };
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--start-date" => opts.start_date = Some(next_value(&mut iter, "--start-date")?),
+            "--end-date" => opts.end_date = Some(next_value(&mut iter, "--end-date")?),
+            "--project-name" => opts.project_name = next_value(&mut iter, "--project-name")?,
+            "--output" => opts.output = PathBuf::from(next_value(&mut iter, "--output")?),
+            "--include-merges" => opts.include_merges = true,
+            other => return Err(format!("unknown option for report: {other}")),
+        }
+    }
+    Ok(opts)
+}
+
+fn parse_date(label: &str, value: &str) -> Result<NaiveDate, String> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
+        format!("{label} must be a valid date in YYYY-MM-DD format (got '{value}').")
+    })
+}
+
+/// Last path component of the repo path, e.g. /home/me/code/alfagift -> alfagift
+fn repo_name(repo: &str) -> &str {
+    Path::new(repo.trim_end_matches('/'))
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(repo)
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// Per day: the sorted set of unique "<repo-name> <message>" lines.
+fn load_report_logs(
+    db: &Path,
+    start: NaiveDate,
+    end: NaiveDate,
+    include_merges: bool,
+) -> Result<BTreeMap<NaiveDate, BTreeSet<String>>, String> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("cannot open {}: {e}", db.display()))?;
+
+    let sql = if include_merges {
+        "SELECT date, repo, message FROM commits WHERE date >= ?1 AND date <= ?2"
+    } else {
+        "SELECT date, repo, message FROM commits
+         WHERE date >= ?1 AND date <= ?2 AND is_merge = 0"
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|e| {
+        format!("cannot read commits table: {e} (has `tasklog run` been executed?)")
+    })?;
+
+    let rows = stmt
+        .query_map(
+            params![
+                start.format("%Y-%m-%d").to_string(),
+                end.format("%Y-%m-%d").to_string()
+            ],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut logs: BTreeMap<NaiveDate, BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        let (date, repo, message) = row.map_err(|e| e.to_string())?;
+        let Ok(date) = NaiveDate::parse_from_str(&date, "%Y-%m-%d") else {
+            continue;
+        };
+        logs.entry(date)
+            .or_default()
+            .insert(format!("{} {}", repo_name(&repo), message));
+    }
+
+    Ok(logs)
+}
+
+/// Builds the report CSV. The calendar comes from the requested range, not from
+/// the logged dates, so days without entries become "Standby" rows. Weekends are
+/// skipped and rows are ordered newest first.
+/// Returns (csv, workdays, standby_days).
+fn build_report(
+    logs: &BTreeMap<NaiveDate, BTreeSet<String>>,
+    start: NaiveDate,
+    end: NaiveDate,
+    project_name: &str,
+) -> (String, usize, usize) {
+    let mut days = Vec::new();
+    let mut day = start;
+    while day <= end {
+        if !matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+            days.push(day);
+        }
+        day = day + Duration::days(1);
+    }
+    days.reverse();
+
+    let mut out = REPORT_HEADER
+        .iter()
+        .map(|h| csv_field(h))
+        .collect::<Vec<_>>()
+        .join(",");
+    out.push('\n');
+
+    let mut standby = 0usize;
+    for day in &days {
+        let (tasks, score) = match logs.get(day) {
+            Some(set) if !set.is_empty() => {
+                (set.iter().cloned().collect::<Vec<_>>().join("\n"), 3)
+            }
+            _ => {
+                standby += 1;
+                ("Standby".to_string(), 0)
+            }
+        };
+
+        let fields = [
+            day.to_string(),
+            project_name.to_string(),
+            "8".to_string(),
+            tasks,
+            score.to_string(), // Complexity
+            score.to_string(), // Urgency
+            String::new(),     // Overtime
+            String::new(),     // Obstacles
+            String::new(),     // Next Target
+        ];
+
+        out.push_str(
+            &fields
+                .iter()
+                .map(|f| csv_field(f))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        out.push('\n');
+    }
+
+    (out, days.len(), standby)
+}
+
+fn report_command(args: &[String]) -> Result<(), String> {
+    let opts = parse_report_options(args)?;
+
+    let start_raw = opts
+        .start_date
+        .ok_or("missing required option: --start-date YYYY-MM-DD")?;
+    let start = parse_date("--start-date", &start_raw)?;
+    let end = match &opts.end_date {
+        Some(value) => parse_date("--end-date", value)?,
+        None => Local::now().date_naive(),
+    };
+    if start > end {
+        return Err(format!("--start-date ({start}) is after --end-date ({end})."));
+    }
+
+    let db = db_path();
+    if !db.exists() {
+        return Err(format!(
+            "database not found at {}. Run `tasklog run` first.",
+            db.display()
+        ));
+    }
+
+    let logs = load_report_logs(&db, start, end, opts.include_merges)?;
+    let (report, workdays, standby) = build_report(&logs, start, end, &opts.project_name);
+
+    fs::write(&opts.output, report)
+        .map_err(|e| format!("cannot write {}: {e}", opts.output.display()))?;
+
+    println!(
+        "\u{2713} Report written to {} ({workdays} workdays, {} with commits, {standby} standby)",
+        opts.output.display(),
+        workdays - standby
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// config, doctor, service
+// ---------------------------------------------------------------------------
 
 fn config_command() {
     let mut repos = read_repo_entries();
@@ -589,11 +841,12 @@ fn service_command(subcommand: Option<&str>) {
 fn print_help() {
     println!(
         "
-        tasklog - Git → SQLite task logger
+        tasklog - Git → SQLite task logger and report generator
 
         Usage:
           tasklog run [--full] [--since DATE]
-          tasklog export [date]      Export logs (default: today)
+          tasklog report --start-date DATE [options]
+          tasklog export [date]      Print logs for one day (default: today)
           tasklog config             Manage repository configuration
           tasklog doctor
           tasklog service [enable|disable|start|stop|status]
@@ -604,12 +857,19 @@ fn print_help() {
           --full                     Rescan all history for every repo
           --since DATE               Scan from DATE (e.g. 2026-09-01)
 
+        Report options:
+          --start-date DATE          Start date, YYYY-MM-DD (required, inclusive)
+          --end-date DATE            End date, YYYY-MM-DD (default: today, inclusive)
+          --project-name NAME        Project name column (default: \"{DEFAULT_PROJECT_NAME}\")
+          --output PATH              Output CSV path (default: output.csv)
+          --include-merges           Include merge commits (excluded by default)
+
         Examples:
           tasklog run
           tasklog run --full
-          tasklog run --since 2026-09-01
+          tasklog report --start-date 2026-09-01
+          tasklog report --start-date 2026-09-01 --end-date 2026-09-30 --output sept.csv
           tasklog export 2026-09-03
-          tasklog service enable
 
         Options:
           -h, --help                 Show help
@@ -624,6 +884,12 @@ fn main() {
     match command {
         None | Some("-h") | Some("--help") | Some("help") => print_help(),
         Some("run") => run_command(&args[1..]),
+        Some("report") => {
+            if let Err(err) = report_command(&args[1..]) {
+                eprintln!("\nFailed to generate report: {err}");
+                std::process::exit(1);
+            }
+        }
         Some("export") => export_command(args.get(1).map(String::as_str)),
         Some("config") => config_command(),
         Some("doctor") => doctor_command(),
