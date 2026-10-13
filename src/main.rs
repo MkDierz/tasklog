@@ -978,6 +978,96 @@ fn service_command(subcommand: Option<&str>) {
     }
 }
 
+/// Repo root (canonicalized) for any path inside a git repo.
+fn git_toplevel(path: &str) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["-C", path, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if top.is_empty() {
+        return None;
+    }
+    fs::canonicalize(&top).ok()
+}
+
+/// Current branch name, or None on a detached HEAD.
+fn git_current_branch(path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", path, "branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// `tasklog config add-current`: track the current repo + branch.
+fn add_current_command() -> Result<(), String> {
+    let top = git_toplevel(".").ok_or("current directory is not inside a git repository")?;
+    let top_str = top.to_string_lossy().to_string();
+    let branch = git_current_branch(&top_str)
+        .ok_or("HEAD is detached, check out a branch first")?;
+
+    let mut repos = read_repo_entries();
+    let existing = repos.iter().position(|entry| {
+        git_toplevel(&expand_path(&entry.repo)).map_or(false, |t| t == top)
+    });
+
+    let repo_cfg = match existing {
+        Some(index) => {
+            if repos[index].branches.contains(&branch) {
+                println!(
+                    "{} already tracks '{branch}' (branches: {}). Nothing to do.",
+                    repos[index].repo,
+                    repos[index].branches.join(", ")
+                );
+                return Ok(());
+            }
+            repos[index].branches.push(branch.clone());
+            println!(
+                "Added branch '{branch}' to {} (now: {})",
+                repos[index].repo,
+                repos[index].branches.join(", ")
+            );
+            repos[index].repo.clone()
+        }
+        None => {
+            repos.push(RepoEntry {
+                repo: top_str.clone(),
+                branches: vec![branch.clone()],
+            });
+            println!("Added repository {top_str} with branch '{branch}'");
+            top_str
+        }
+    };
+
+    write_repo_entries(&repos);
+
+    // Force a full rescan for this repo on the next run so the new branch's
+    // history is picked up (hash dedupe keeps existing rows intact).
+    if db_path().exists() {
+        let conn = open_db();
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            params![last_run_key(&expand_path(&repo_cfg))],
+        )
+        .ok();
+    }
+    println!("Next `tasklog run` will rescan full history for this repo.");
+
+    Ok(())
+}
+
 fn print_help() {
     println!(
         "
@@ -988,6 +1078,7 @@ fn print_help() {
           tasklog report --start-date DATE [options]
           tasklog export [date]      Print logs for one day (default: today)
           tasklog config             Manage repository configuration
+          tasklog config add-current Track the current repo + branch
           tasklog doctor
           tasklog service [enable|disable|start|stop|status]
 
@@ -1031,7 +1122,19 @@ fn main() {
             }
         }
         Some("export") => export_command(args.get(1).map(String::as_str)),
-        Some("config") => config_command(),
+        Some("config") => match args.get(1).map(String::as_str) {
+            Some("add-current") => {
+                if let Err(err) = add_current_command() {
+                    eprintln!("Error: {err}");
+                    std::process::exit(1);
+                }
+            }
+            Some(other) => {
+                eprintln!("Unknown config subcommand: {other}");
+                std::process::exit(1);
+            }
+            None => config_command(),
+        },
         Some("doctor") => doctor_command(),
         Some("service") => service_command(args.get(1).map(String::as_str)),
         _ => {
@@ -1039,5 +1142,6 @@ fn main() {
             print_help();
             std::process::exit(1);
         }
+        
     }
 }
